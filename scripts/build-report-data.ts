@@ -7,14 +7,14 @@ const SHEET_NAMES = [
   'Yearly Funding Data',
   'Quarterly Funding Data',
   'Yearly Enterprise Value',
-  'Top Industries, Tags, Rounds', // Fixed name from spec implementation example
+  'Top Industries, Tags, Rounds',
   'Top Rounds',
   'Regional Comparison',
 ];
 
 /**
  * Fetches sheet data using the Google Visualization API (JSON export path)
- * This works for any public Google Sheet without an API key.
+ * Optimized to exclude empty rows and columns.
  */
 async function fetchSheetData(sheetName: string) {
   const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
@@ -26,7 +26,6 @@ async function fetchSheetData(sheetName: string) {
   
   const text = await response.text();
   
-  // The response is wrapped in a callback: /* google.visualization.Query.setResponse({...}); */
   const jsonMatch = text.match(/google\.visualization\.Query\.setResponse\((.*)\);/);
   if (!jsonMatch) {
     throw new Error(`Failed to parse JSON response for sheet "${sheetName}"`);
@@ -35,21 +34,40 @@ async function fetchSheetData(sheetName: string) {
   const data = JSON.parse(jsonMatch[1]);
   const table = data.table;
   
-  // Extract headers
-  const headers = table.cols.map((col: any) => col.label || '');
-  
-  // Map rows to objects using headers
-  return table.rows.map((row: any) => {
+  // 1. Identify valid columns (columns that have a header label)
+  const validCols = table.cols
+    .map((col: any, i: number) => ({ label: col.label?.trim(), index: i }))
+    .filter((col: any) => col.label !== '');
+
+  if (validCols.length === 0) return [];
+
+  const results: any[] = [];
+
+  // 2. Process rows and filter out empty ones
+  for (const row of table.rows) {
+    if (!row.c) continue;
+
     const obj: any = {};
-    row.c.forEach((cell: any, i: number) => {
-      const header = headers[i];
-      if (header) {
-        // v is the raw value, f is the formatted string. We prefer raw values.
-        obj[header] = cell?.v ?? '';
+    let hasData = false;
+
+    for (const col of validCols) {
+      const cell = row.c[col.index];
+      const value = cell?.v ?? '';
+      
+      // Check if value is truly empty (ignoring empty strings)
+      if (value !== '' && value !== null && value !== undefined) {
+        hasData = true;
       }
-    });
-    return obj;
-  });
+      obj[col.label] = value;
+    }
+
+    // Only add row if it contains at least one non-empty cell in a valid column
+    if (hasData) {
+      results.push(obj);
+    }
+  }
+  
+  return results;
 }
 
 async function main() {
@@ -58,21 +76,18 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('📥 Fetching Google Sheets data via JSON export path...');
+  console.log('📥 Fetching Google Sheets data (Optimized)...');
   
   try {
-    // Fetch all sheets in parallel
     const sheetsData = await Promise.all(
       SHEET_NAMES.map(name => fetchSheetData(name))
     );
     
-    // Calculate current reporting quarter
     const now = new Date();
     const year = now.getFullYear();
     const quarterNumber = Math.ceil((now.getMonth() + 1) / 3) as 1|2|3|4;
     const reportingQuarter = `${year}Q${quarterNumber}`;
     
-    // Build output JSON
     const output = {
       meta: {
         generated_at: now.toISOString(),
@@ -98,15 +113,14 @@ async function main() {
       },
     };
     
-    // Ensure public directory exists
     const publicDir = path.join(process.cwd(), 'public');
     if (!existsSync(publicDir)) {
       mkdirSync(publicDir);
     }
 
-    // Write to public/report-data.json
     const outputPath = path.join(publicDir, 'report-data.json');
-    writeFileSync(outputPath, JSON.stringify(output, null, 2));
+    // Removed indentation to minimize file size
+    writeFileSync(outputPath, JSON.stringify(output));
     
     console.log('✅ Cache complete!');
     console.log(`   Locations: ${sheetsData[0].length}`);
