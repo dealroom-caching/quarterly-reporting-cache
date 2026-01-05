@@ -11,7 +11,6 @@ const SHEET_CONFIGS = [
   { key: 'yearly_ev', name: 'Yearly Enterprise Value', gid: '1785838256' },
   { key: 'top_industries_tags', name: 'Top Industries and Tags', gid: '1075248480' },
   { key: 'top_rounds', name: 'Top Rounds', gid: '279039385' },
-  { key: 'regional_comparison', name: 'Regional Comparison', gid: '1503787806' },
 ];
 
 // Primary key column for filtering empty rows
