@@ -1,0 +1,18 @@
+{
+  "name": "quarterly-report-data",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsx scripts/build-report-data.ts"
+  },
+  "dependencies": {
+    "googleapis": "^130.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}
+
