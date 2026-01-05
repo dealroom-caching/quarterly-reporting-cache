@@ -2,27 +2,21 @@ import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
-const SHEET_NAMES = [
-  'Locations Metadata',
-  'Yearly Funding Data',
-  'Quarterly Funding Data',
-  'Yearly Enterprise Value',
-  'Top Industries, Tags, Rounds',
-  'Top Rounds',
-  'Regional Comparison',
+
+// Sheet configurations with GID (more reliable than names)
+// Find GID in URL when you click each sheet tab: #gid=XXXXXXX
+const SHEET_CONFIGS = [
+  { key: 'locations', name: 'Locations Metadata', gid: '' },           // Fill in GID
+  { key: 'yearly_funding', name: 'Yearly Funding Data', gid: '' },     // Fill in GID
+  { key: 'quarterly_funding', name: 'Quarterly Funding Data', gid: '' }, // Fill in GID
+  { key: 'yearly_ev', name: 'Yearly Enterprise Value', gid: '' },      // Fill in GID
+  { key: 'top_industries_tags', name: 'Top Industries, Tags, Rounds', gid: '' }, // Fill in GID
+  { key: 'top_rounds', name: 'Top Rounds', gid: '' },                  // Fill in GID
+  { key: 'regional_comparison', name: 'Regional Comparison', gid: '' }, // Fill in GID
 ];
 
-// Primary key column for each sheet (used to filter empty rows)
-// All sheets use location_database_name as the primary identifier
-const PRIMARY_KEY_COLUMNS: Record<string, string> = {
-  'Locations Metadata': 'location_database_name',
-  'Yearly Funding Data': 'location_database_name',
-  'Quarterly Funding Data': 'location_database_name',
-  'Yearly Enterprise Value': 'location_database_name',
-  'Top Industries, Tags, Rounds': 'location_database_name',
-  'Top Rounds': 'location_database_name',
-  'Regional Comparison': 'location_database_name',
-};
+// Primary key column for filtering empty rows
+const PRIMARY_KEY = 'location_database_name';
 
 /**
  * Parse CSV text into array of objects
@@ -116,36 +110,40 @@ function parseCSVRow(row: string): string[] {
 }
 
 /**
- * Fetches sheet data using CSV export
+ * Fetches sheet data using GID (more reliable) or falls back to sheet name
  */
-async function fetchSheetData(sheetName: string): Promise<Record<string, string>[]> {
-  // Add cache-busting parameter to force fresh data
+async function fetchSheetData(config: typeof SHEET_CONFIGS[0]): Promise<Record<string, string>[]> {
   const cacheBuster = Date.now();
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&_cb=${cacheBuster}`;
+  
+  // Use GID if available, otherwise fall back to sheet name
+  const sheetParam = config.gid 
+    ? `gid=${config.gid}` 
+    : `sheet=${encodeURIComponent(config.name)}`;
+  
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&${sheetParam}&headers=1&_cb=${cacheBuster}`;
+  
+  console.log(`   Fetching ${config.name}...`);
   
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Failed to fetch sheet "${sheetName}": ${response.statusText}`);
+    throw new Error(`Failed to fetch "${config.name}": ${response.statusText}`);
   }
   
   const csvText = await response.text();
   const allRows = parseCSV(csvText);
   
-  // Get the primary key column for this sheet
-  const primaryKeyCol = PRIMARY_KEY_COLUMNS[sheetName];
-  
-  // Debug: show first row's keys
+  // Debug: show columns
   if (allRows.length > 0) {
-    console.log(`   [${sheetName}] Columns: ${Object.keys(allRows[0]).join(', ')}`);
+    console.log(`   [${config.name}] Columns: ${Object.keys(allRows[0]).join(', ')}`);
   }
   
-  // Filter: only keep rows where the primary key column has a value
+  // Filter: only keep rows where primary key has a value
   const filteredRows = allRows.filter(row => {
-    const primaryValue = row[primaryKeyCol];
+    const primaryValue = row[PRIMARY_KEY];
     return primaryValue && primaryValue.trim() !== '';
   });
   
-  console.log(`   [${sheetName}] Raw: ${allRows.length} rows -> Filtered: ${filteredRows.length} rows`);
+  console.log(`   [${config.name}] Raw: ${allRows.length} -> Filtered: ${filteredRows.length} rows`);
   
   return filteredRows;
 }
@@ -157,11 +155,20 @@ async function main() {
   }
 
   console.log('📥 Fetching Google Sheets data...');
+  console.log(`   Sheet ID: ${SHEET_ID}`);
+  console.log('');
   
   try {
-    const sheetsData = await Promise.all(
-      SHEET_NAMES.map(name => fetchSheetData(name))
-    );
+    const sheetsData: Record<string, Record<string, string>[]> = {};
+    
+    for (const config of SHEET_CONFIGS) {
+      try {
+        sheetsData[config.key] = await fetchSheetData(config);
+      } catch (error) {
+        console.error(`   ❌ Failed to fetch ${config.name}:`, error);
+        sheetsData[config.key] = [];
+      }
+    }
     
     const now = new Date();
     const year = now.getFullYear();
@@ -177,15 +184,7 @@ async function main() {
         reporting_quarter_number: quarterNumber,
         schema_version: '2.0',
       },
-      sheets: {
-        locations: sheetsData[0],
-        yearly_funding: sheetsData[1],
-        quarterly_funding: sheetsData[2],
-        yearly_ev: sheetsData[3],
-        top_industries_tags: sheetsData[4],
-        top_rounds: sheetsData[5],
-        regional_comparison: sheetsData[6],
-      },
+      sheets: sheetsData,
       config: {
         map_enabled: false,
         share_preview_enabled: true,
@@ -205,17 +204,16 @@ async function main() {
     console.log('✅ Cache complete!');
     console.log(`   Reporting: ${reportingQuarter}`);
     
-    const sheetSizes = SHEET_NAMES.map((name, i) => ({
-      name,
-      rows: sheetsData[i].length,
-      size: JSON.stringify(sheetsData[i]).length,
-    }));
-    sheetSizes.forEach(s => {
-      console.log(`   ${s.name}: ${s.rows} rows, ${(s.size / 1024).toFixed(1)} KB`);
-    });
+    let totalSize = 0;
+    for (const config of SHEET_CONFIGS) {
+      const data = sheetsData[config.key];
+      const size = JSON.stringify(data).length;
+      totalSize += size;
+      console.log(`   ${config.name}: ${data.length} rows, ${(size / 1024).toFixed(1)} KB`);
+    }
     
-    const totalSize = JSON.stringify(output).length;
-    console.log(`   Total size: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+    const finalSize = JSON.stringify(output).length;
+    console.log(`   Total size: ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
   } catch (err) {
     console.error('❌ Cache failed:', err);
     process.exit(1);
