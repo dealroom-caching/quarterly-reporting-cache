@@ -119,7 +119,9 @@ function parseCSVRow(row: string): string[] {
  * Fetches sheet data using CSV export
  */
 async function fetchSheetData(sheetName: string): Promise<Record<string, string>[]> {
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  // Add cache-busting parameter to force fresh data
+  const cacheBuster = Date.now();
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&_cb=${cacheBuster}`;
   
   const response = await fetch(url);
   if (!response.ok) {
