@@ -1,109 +1,46 @@
-import { writeFileSync, existsSync, mkdirSync } from 'fs';
-import path from 'path';
+name: Cache Google Sheets Data
 
-const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
-const SHEET_NAMES = [
-  'Locations Metadata',
-  'Yearly Funding Data',
-  'Quarterly Funding Data',
-  'Yearly Enterprise Value',
-  'Top Industries, Tags, Rounds',
-  'Top Rounds',
-  'Regional Comparison',
-];
+on:
+  workflow_dispatch:  # Manual trigger
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/build-data.yml'
 
-async function fetchSheetData(sheetName: string) {
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
-  
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch ${sheetName}`);
-  
-  const text = await response.text();
-  const jsonMatch = text.match(/google\.visualization\.Query\.setResponse\((.*)\);/);
-  if (!jsonMatch) throw new Error(`Parse error for ${sheetName}`);
-  
-  const table = JSON.parse(jsonMatch[1]).table;
-  
-  // 1. Only columns with actual labels (not "Col1", etc.)
-  const validCols = table.cols
-    .map((col: any, i: number) => ({ 
-      label: col.label ? String(col.label).trim() : '', 
-      index: i 
-    }))
-    .filter((col: any) => col.label !== '' && !/^Col\d+$/.test(col.label));
-
-  if (validCols.length === 0) return [];
-
-  const results: any[] = [];
-  for (const row of table.rows) {
-    if (!row.c) continue;
-
-    const obj: any = {};
-    let hasData = false;
-
-    for (const col of validCols) {
-      const cell = row.c[col.index];
-      // Prefer raw value (v), fallback to formatted value (f) for errors/#N/A
-      const value = cell?.v !== null && cell?.v !== undefined ? cell.v : (cell?.f ?? '');
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
       
-      if (value !== '' && value !== null && value !== undefined) hasData = true;
-      obj[col.label] = value;
-    }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
 
-    if (hasData) results.push(obj);
-  }
-  
-  return results;
-}
+      - run: npm ci
 
-async function main() {
-  if (!SHEET_ID) {
-    console.error('❌ Missing GOOGLE_SHEET_ID');
-    process.exit(1);
-  }
+      - name: Fetch and cache Google Sheets data
+        env:
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: npm run build
 
-  console.log('📥 Fetching Sheets...');
-  try {
-    const sheetsData = await Promise.all(SHEET_NAMES.map(fetchSheetData));
-    
-    const now = new Date();
-    const output = {
-      meta: {
-        generated_at: now.toISOString(),
-        source_sheet_id: SHEET_ID,
-        reporting_quarter: `${now.getFullYear()}Q${Math.ceil((now.getMonth() + 1) / 3)}`,
-        reporting_year: now.getFullYear(),
-        reporting_quarter_number: Math.ceil((now.getMonth() + 1) / 3),
-        schema_version: '2.0',
-      },
-      sheets: {
-        locations: sheetsData[0],
-        yearly_funding: sheetsData[1],
-        quarterly_funding: sheetsData[2],
-        yearly_ev: sheetsData[3],
-        top_industries_tags: sheetsData[4],
-        top_rounds: sheetsData[5],
-        regional_comparison: sheetsData[6],
-      },
-      config: {
-        map_enabled: false,
-        share_preview_enabled: true,
-        default_location_id: 'london',
-      },
-    };
-    
-    const publicDir = path.join(process.cwd(), 'public');
-    if (!existsSync(publicDir)) mkdirSync(publicDir);
+      - name: Validate JSON
+        run: |
+          test -s public/report-data.json || exit 1
+          jq empty public/report-data.json
+          echo "Size: $(wc -c < public/report-data.json) bytes"
 
-    const outputPath = path.join(publicDir, 'report-data.json');
-    writeFileSync(outputPath, JSON.stringify(output)); // Minified
-    
-    const sizeMB = (JSON.stringify(output).length / 1024 / 1024).toFixed(2);
-    console.log(`✅ Success! Size: ${sizeMB} MB`);
-  } catch (err) {
-    console.error('❌ Failed:', err);
-    process.exit(1);
-  }
-}
-
-main();
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/report-data.json
+          git diff --staged --quiet || git commit -m "chore: update cached data [skip ci]"
+          git push
