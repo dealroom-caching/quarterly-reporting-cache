@@ -114,12 +114,8 @@ function parseCSVRow(row: string): string[] {
 async function fetchSheetData(config: typeof SHEET_CONFIGS[0]): Promise<Record<string, string>[]> {
   const cacheBuster = Date.now();
   
-  // Use GID if available, otherwise fall back to sheet name
-  const sheetParam = config.gid 
-    ? `gid=${config.gid}` 
-    : `sheet=${encodeURIComponent(config.name)}`;
-  
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&${sheetParam}&headers=1&_cb=${cacheBuster}`;
+  // Use /export endpoint which returns all data regardless of filter state
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${config.gid}&_cb=${cacheBuster}`;
   
   console.log(`   Fetching ${config.name}...`);
   
